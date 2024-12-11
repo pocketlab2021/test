@@ -4,7 +4,6 @@ from email.mime.base import MIMEBase
 from email.mime.text import MIMEText
 from email.utils import COMMASPACE
 from email import encoders
-import logging
 
 
 class MailSender:
@@ -29,8 +28,8 @@ class MailSender:
 
         # 添加截图附件
         with open(attach_file_name, 'rb') as f:
-            mime = MIMEBase('image', 'png', filename=attach_file_name)
-            mime.add_header('Content-Disposition', 'attachment', filename=attach_file_name)
+            mime = MIMEBase('image', 'jpg', filename='qrcode.jpg')
+            mime.add_header('Content-Disposition', 'attachment', filename='qrcode.jpg')
             mime.add_header('X-Attachment-Id', '0')
             mime.set_payload(f.read())
             encoders.encode_base64(mime)
@@ -58,12 +57,12 @@ if __name__ == "__main__":
         mail_host="smtp.qq.com",
         mail_host_port=465,
         mail_user="1983270580@qq.com",
-        mail_pass="mklgfcgprteudebd"
+        mail_pass="ztwxmlqkxabqdeaj"
     )
 
     mail_sender.send_mail_with_attachment(
         receivers=['wangfengchen@bankcomm.com'],
         subject='票据辅助助手邮件发送功能测试',
         text='您好，本邮件为功能测试，收到可忽略',
-        attach_file_name='./qrcode.jpg'
+        attach_file_name='tmp/qrcode_20241210_225325.jpg'
     )
