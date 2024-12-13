@@ -61,8 +61,8 @@ if __name__ == "__main__":
     )
 
     mail_sender.send_mail_with_attachment(
-        receivers=['wangfengchen@bankcomm.com'],
-        subject='票据辅助助手邮件发送功能测试',
+        receivers=['209230780@qq.com'],
+        subject='mail_test',
         text='您好，本邮件为功能测试，收到可忽略',
         attach_file_name='tmp/qrcode_20241210_225325.jpg'
     )

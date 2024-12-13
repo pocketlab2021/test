@@ -72,34 +72,42 @@ def send_login_mail(file_path, file_name, is_prd):
         )
 
         mail_sender.send_mail_with_attachment(
-            receivers=['wangfengchen@bankcomm.com'],
+            receivers=['209230780@qq.com'],
             subject='票据辅助助手邮件发送功能测试',
             text='您好，本邮件为功能测试，收到可忽略',
-            attach_file_name=file_name
+            attach_file_name=file_path + '/' + file_name
         )
 
 
 def init_chromium_browser_tab():
     # 启动或接管浏览器，并创建标签页对象（仅支持Chromium内核浏览器）
-    if check_chrome_process():
-        print('already exist chrome')
-        return Chromium().latest_tab
-    else:
-        co = ChromiumOptions()
-        co.set_argument('--start-maximized')
-        co.add_extension(r'./wechat-need-web-main/dist/chrome')
-        co.save_to_default()
-        print('create new chrome')
-        return Chromium(addr_or_opts=co).latest_tab
+    # 程序结束时，被打开的浏览器不会主动关闭（VSCode 启动的除外）
+    co = ChromiumOptions()
+    co.set_argument('--start-maximized')
+    co.add_extension(r'./wechat-need-web-main/dist/chrome')
+    # co.save_to_default()
+    print('create new chrome')
+    return Chromium(addr_or_opts=co).latest_tab
+
+    # if check_chrome_process():
+    #     print('already exist chrome, take over')
+    #     return Chromium().latest_tab
+    # else:
+    #     co = ChromiumOptions()
+    #     co.set_argument('--start-maximized')
+    #     co.add_extension(r'./wechat-need-web-main/dist/chrome')
+    #     # co.save_to_default()
+    #     print('create new chrome')
+    #     return Chromium(addr_or_opts=co).latest_tab
 
 
-def save_as_json(items):
+def save_as_json(msgs):
     path = "msg.json"
     with open(path, 'a', encoding="utf-8") as f:
-        for item in items:
-            data_json = json.dumps(item, ensure_ascii=False)
-            f.write(data_json + "\n")
-
+        for k,v in msgs.items():
+            for data in v:
+                data_json = json.dumps(v, ensure_ascii=False)
+                f.write(data_json + "\n")
 
 def _get_or_create_cache(max_cache_size):
     cache = Cache(max_cache_size)
@@ -120,40 +128,45 @@ class MSGCrawler:
         self.group_names = []  # 默认需抓取的群聊名列表
         self.post_url = post_url  # 抓取结果发送的url
 
-    def post_to_server(self, item):
-        """结果发到我们SLB，转发到edps_ack的nesAIQryCesDscntInfo处理"""
-        jdata = {"REQ_MESSAGE": {"REQ_HEAD": {"TRANS_PROCESS": "", "TRANS_ID": ""}, "REQ_BODY": {"data": item}}}
-        boundary = "----WebKitFormBoundary7MA4YWxkTrZu0gW"  # 定义边界字符串
-        body = ""
-        for key, value in jdata.items():
-            body += "--" + boundary + "\r\n"
-            body += 'Content-Disposition: form-data; name="%s"\r\n\r\n' % key
-            body += json.dumps(value) + "\r\n"
-        body += "--" + boundary + "--\r\n"
-        body = body.encode('utf-8')
+    def post_to_server(self, items):
+        for item in items:
+            jdata = {"REQ_MESSAGE": {"REQ_HEAD": {"TRANS_PROCESS": "", "TRANS_ID": ""}, "REQ_BODY": {"data": item}}}
+            boundary = "----WebKitFormBoundary7MA4YWxkTrZu0gW"  # 定义边界字符串
+            body = ""
+            for key, value in jdata.items():
+                body += "--" + boundary + "\r\n"
+                body += 'Content-Disposition: form-data; name="%s"\r\n\r\n' % key
+                body += json.dumps(value) + "\r\n"
+            body += "--" + boundary + "--\r\n"
+            body = body.encode('utf-8')
 
-        # 定义请求头，指定编码类型和内容长度
-        headers = {
-            "Content-Type": "multipart/form-data; boundary=%s" % boundary,
-            "Content-Length": str(len(body))
-        }
+            logger.debug(f"send body:{body}")
 
-        response = requests.request("POST", self.post_url, headers=headers, data=body)
-        if response.status_code == 200:
-            logger.info("数据发送成功!!")
-        else:
-            info = "数据发送失败!! 响应状态码: %s" % response.status_code
-            logger.warning(info)
-            print("send failed!")
+            # 定义请求头，指定编码类型和内容长度
+            headers = {
+                "Content-Type": "multipart/form-data; boundary=%s" % boundary,
+                "Content-Length": str(len(body))
+            }
+
+            # try:
+            #     response = requests.request("POST", self.post_url, headers=headers, data=body)
+            #     if response.status_code == 200:
+            #         logger.info("数据发送成功!!")
+            #     else:
+            #         info = "数据发送失败!! 响应状态码: %s" % response.status_code
+            #         logger.warning(info)
+            #         print("send failed!")
+            # except ConnectionError as e:
+            #     print(f"connect error:{e}")
 
     def get_group_name(self):
         self._tab.ele('@title=通讯录').click(by_js=None)
         time.sleep(1)
-
+        # self._tab.actions.scroll(delta_y=-0.5 * item_height, on_ele=self._tab.ele('@class=scroll-bar'))
         if not self._tab.ele('text=群组'):
             logger.warning("未发现当前账号保存的群聊！！！")
             self.group_names = []
-        else:
+        else:  #TODO:通讯录中的群聊超过一页时，还需复原滚动条至最上方
             logger.info("开始获取所有群聊...")
             group_names = []
             is_group_items_end = False
@@ -193,40 +206,63 @@ class MSGCrawler:
                             msg_item['pubTime'] = datetime.now().strftime("%H:%M:%S")
                         msg_item_list.append(msg_item)
                 else:  # 没有时间的非文字消息或其它情况
-                    logger.debug(f"plain:{plain}")
+                    logger.debug("没有时间的非文字消息或其它情况")
         return msg_item_list
 
-    def login(self):
+    def login(self, is_send_mail):
         print("t1:", datetime.now().strftime("%H:%M:%S"))
-        if self._tab.ele('@id=chatArea'):
+        if self._tab.ele('@id=chatArea') and self._tab.ele('@id=chatArea').states.is_clickable:
             logger.info("已有账号登录")
         else:
             print("t2:", datetime.now().strftime("%H:%M:%S"))
             logger.info("需扫码登录")
-            self._tab.get('https://wx.qq.com')
-            print("t3:", datetime.now().strftime("%H:%M:%S"))
-            # while not self._tab.ele('@id=chatArea'):
-            #     print("waiting......")
-            #     time.sleep(20)  # 等扫码完成加载
-            # # 测试环境没开邮件网络权限，还是得手动扫码
-            try_num = 0
-            print(datetime.now().strftime("%H:%M:%S"))
-            time.sleep(5)
-            while try_num<=MAX_TRY_TIMES:
-                try_num += 1
-                try: 
-                    name= f"qrcode_{datetime.now().strftime('%Y%m%d_%H%M%S')}.jpg"
-                    self._tab.get_screenshot(path='tmp', name=name, full_page=True)
-                    logger.info("wait for login...")
-                    send_login_mail('tmp', name, False)
-                except Exception as e:
-                    logger.error(f"send mail failed:{e}")
-                finally:
-                    time.sleep(30)
-                    if self._tab.ele('@id=chatArea'):
-                        logger.info("login finish")
+            self._tab.get('https://wx.qq.com', retry=1, timeout=5)
+            self._tab.refresh()
+            time.sleep(2)
+            if is_send_mail:
+                last_email_send_time = time.time() - 180
+                while True:
+                    if self._tab.ele('@id=chatArea').states.is_clickable:
+                        logger.info("login success")
                         break
-            logger.debug(f"try_num={try_num}")
+                    elif not self._tab.ele('@class=qrcode'):
+                        logger.info("找不到二维码了，啥情况？")
+                        try:
+                            if self._tab.ele('二维码失效').states.is_clickable or self._tab.ele('网络连接已断开').states.is_clickable:
+                                logger.info("二维码失效，刷新页面")
+                                self._tab.refresh()
+                                time.sleep(2)
+                            else:
+                                logger.error("其它异常情况，需人工处理！！")
+                        except ElementNotFoundError as e:
+                            if self._tab.ele('@id=chatArea') and \
+                                self._tab.ele('@id=chatArea').states.is_clickable:
+                                    logger.info("login success")
+                                    break
+                    else:
+                        current_time = time.time()    
+                        if current_time - last_email_send_time >= 180:
+                            try: 
+                                name= f"qrcode_{datetime.now().strftime('%Y%m%d_%H%M%S')}.jpg"
+                                self._tab.wait(2)
+                                self._tab.get_screenshot(path='tmp', name=name, full_page=True)
+                                send_login_mail('tmp', name, False)
+                                logger.info("wait for login...")
+                            except Exception as e:
+                                logger.error(f"send mail failed:{e}")
+                                time.sleep(10)
+                            else:
+                                last_email_send_time = current_time
+                                logger.debug(f"send mail success")
+                        else:
+                            wait_time = 180 - (current_time - last_email_send_time)
+                            logger.info(f"距离上次发送邮件不足3分钟，需等待{wait_time:.2f}秒后才可再发送")
+                            # time.sleep(wait_time)
+            else:
+                print("sleep30s，赶紧扫码。。。")
+                logger.info("赶紧扫码。。。")
+                time.sleep(30)
+
 
     def check_need_scroll(self, group_name, content_list):
         is_need_scroll = True
@@ -267,7 +303,7 @@ class MSGCrawler:
         return is_group_items_end, group_names, item_height
 
     def get_group_msgs(self, group_name):
-        msg_item_list = {}
+        msg_item_list = []
         plain_list, content_list = [], []
         # 向上滑动以获取未在缓存中的消息(仅文字)
         total_content_item_height = 0
@@ -305,6 +341,7 @@ class MSGCrawler:
                     elif self._tab.ele('@id=chatArea').eles('@class=clearfix'):
                         logger.info("抓取{}中...".format(group_name))
                         group_msgs[group_name] = self.get_group_msgs(group_name)
+                        logger.debug(f"群聊{group_name}抓取到新消息{group_msgs[group_name]}")
                     else:
                         logger.error("未知错误")
                     logger.info("结束抓取{}".format(group_name))
@@ -312,17 +349,19 @@ class MSGCrawler:
             else:
                 logger.error("No Valid Group Name")
 
-            if len(group_msgs) > 0:
-                for k,v in group_msgs.items():
+            for k,v in group_msgs.items():
+                if len(v) > 0:
+                    logger.debug(f"type of item: {type(v)}")
                     self.post_to_server(v)
                     logger.info(f"完成发送群聊{k}数据")
-            else:
-                logger.info("没有新数据，此次不发送数据")
+                else:
+                    logger.info(f"群聊{k}没有新数据，此次不发送")
             self._cache.save(CACHE_LOCAL_PATH)
             # 保存结果到本地
             save_as_json(group_msgs)
-        except [ElementNotFoundError, ElementLostError, NoRectError] as e:
+        except Exception as e:
             logger.error(f"发生元素交互异常：{e}")
+        # except [ElementNotFoundError, ElementLostError, NoRectError] as e:
         # except [ContextLostError, CDPError, PageDisconnectedError] as e2:
         #     logger.error(f"环境异常：{e2}")
 
@@ -330,9 +369,9 @@ class MSGCrawler:
 
 if __name__ == '__main__':
     crawler = MSGCrawler(max_cache_size=CACHE_SIZE, post_url=POST_URL)
-    crawler.login()
+    crawler.login(is_send_mail=False)
     crawler.run()
-    #  设置定时任务
+    # 设置定时任务
     logger.info("启动定时任务..")
     # 群聊较多时根据实际情况调整定时间隔
     schedule.every(TASK_TNTERVAL).seconds.do(crawler.run)  

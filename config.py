@@ -1,4 +1,4 @@
-TASK_TNTERVAL = 300  # 抓取数据的时间间隔（秒）
+TASK_TNTERVAL = 30  # 抓取数据的时间间隔（秒）
 MAX_TRY_TIMES = 5  # 发送邮件的最大重试次数
 # 缓存（用于去重）配置
 CACHE_SIZE = 500  # 内容缓存条数(用于查重)
