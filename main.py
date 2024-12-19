@@ -1,5 +1,7 @@
 # 导入标准库
 import json
+import os
+import re
 import time
 import random
 import logging
@@ -8,7 +10,6 @@ from datetime import datetime
 import psutil
 
 # 导入第三方库
-import schedule
 import requests
 from DrissionPage.errors import *
 from DrissionPage import Chromium
@@ -17,25 +18,34 @@ from DrissionPage import ChromiumOptions
 # 导入自定义库
 from cache import Cache
 from mailSender import MailSender
-from config import (CACHE_SIZE, TASK_TNTERVAL, 
+from config import (CACHE_SIZE, TASK_TNTERVAL,
                     MAX_TRY_TIMES, POST_URL, CACHE_LOCAL_PATH)
 
+PATH = "./log"
+if not os.path.exists(PATH):
+    os.makedirs(PATH)
+    print("create log save path")
+else:
+    print("path already exists")
+
 logger = logging.getLogger('my_logger')
-handler = TimedRotatingFileHandler('my_app.log', when='midnight', interval=1, backupCount=30, encoding='utf-8')
-logger.setLevel(logging.DEBUG)
+handler = TimedRotatingFileHandler('log/cpts_wechat_msg_crawl.log',
+                                   when='midnight', interval=1,
+                                   backupCount=30, encoding='utf-8')
+logger.setLevel(logging.INFO) # 
 
 formatter = logging.Formatter('[%(asctime)s %(levelname)s] %(message)s')
-handler.setLevel(logging.DEBUG)
+handler.setLevel(logging.INFO)
 handler.setFormatter(formatter)
 logger.addHandler(handler)
-
 
 CACHE_LOCAL_PATH = './myCache.pkl'
 
 
 def check_chrome_process():
     for proc in psutil.process_iter(['name']):
-        if proc.info['name'].lower() == "chrome.exe" or proc.info['name'].lower() == "google-chrome":
+        if proc.info['name'].lower() == "chrome.exe" or \
+                proc.info['name'].lower() == "google-chrome":
             return True
     return False
 
@@ -83,31 +93,22 @@ def init_chromium_browser_tab():
     # 启动或接管浏览器，并创建标签页对象（仅支持Chromium内核浏览器）
     # 程序结束时，被打开的浏览器不会主动关闭（VSCode 启动的除外）
     co = ChromiumOptions()
+    co.set_timeouts(base=3, page_load=10, script=10)
     co.set_argument('--start-maximized')
     co.add_extension(r'./wechat-need-web-main/dist/chrome')
     # co.save_to_default()
     print('create new chrome')
     return Chromium(addr_or_opts=co).latest_tab
 
-    # if check_chrome_process():
-    #     print('already exist chrome, take over')
-    #     return Chromium().latest_tab
-    # else:
-    #     co = ChromiumOptions()
-    #     co.set_argument('--start-maximized')
-    #     co.add_extension(r'./wechat-need-web-main/dist/chrome')
-    #     # co.save_to_default()
-    #     print('create new chrome')
-    #     return Chromium(addr_or_opts=co).latest_tab
-
 
 def save_as_json(msgs):
     path = "msg.json"
     with open(path, 'a', encoding="utf-8") as f:
-        for k,v in msgs.items():
+        for k, v in msgs.items():
             for data in v:
-                data_json = json.dumps(v, ensure_ascii=False)
+                data_json = json.dumps(data, ensure_ascii=False)
                 f.write(data_json + "\n")
+
 
 def _get_or_create_cache(max_cache_size):
     cache = Cache(max_cache_size)
@@ -128,45 +129,60 @@ class MSGCrawler:
         self.group_names = []  # 默认需抓取的群聊名列表
         self.post_url = post_url  # 抓取结果发送的url
 
+    def dealItem(self, item):
+        for k,v in item.items():
+            if k=='publisher' or k=='content' or k=='roomName':
+                pattern = re.compile(r'[^\t\n\w]')
+                item[k] = pattern.sub('', v)
+        return item
+
     def post_to_server(self, items):
         for item in items:
-            jdata = {"REQ_MESSAGE": {"REQ_HEAD": {"TRANS_PROCESS": "", "TRANS_ID": ""}, "REQ_BODY": {"data": item}}}
-            boundary = "----WebKitFormBoundary7MA4YWxkTrZu0gW"  # 定义边界字符串
-            body = ""
-            for key, value in jdata.items():
-                body += "--" + boundary + "\r\n"
-                body += 'Content-Disposition: form-data; name="%s"\r\n\r\n' % key
-                body += json.dumps(value) + "\r\n"
-            body += "--" + boundary + "--\r\n"
-            body = body.encode('utf-8')
+            if item['content'] != "":
+                jdata = {"REQ_MESSAGE": {
+                    "REQ_HEAD": {"TRANS_PROCESS": "", "TRANS_ID": ""},
+                    "REQ_BODY": {"data": [self.dealItem(item)]}
+                }}
+                boundary = "----WebKitFormBoundary7MA4YWxkTrZu0gW"  # 定义边界字符串
+                body = ""
+                for key, value in jdata.items():
+                    body += "--" + boundary + "\r\n"
+                    body += 'Content-Disposition: form-data; name="%s"\r\n\r\n' % key
+                    body += json.dumps(value) + "\r\n"
+                body += "--" + boundary + "--\r\n"
+                body = body.encode('utf-8')
 
-            logger.debug(f"send body:{body}")
+                logger.debug(f"send body:{body}")
 
-            # 定义请求头，指定编码类型和内容长度
-            headers = {
-                "Content-Type": "multipart/form-data; boundary=%s" % boundary,
-                "Content-Length": str(len(body))
-            }
+                # 定义请求头，指定编码类型和内容长度
+                headers = {
+                    "Content-Type": "multipart/form-data; boundary=%s" % boundary,
+                    "Content-Length": str(len(body))
+                }
 
-            # try:
-            #     response = requests.request("POST", self.post_url, headers=headers, data=body)
-            #     if response.status_code == 200:
-            #         logger.info("数据发送成功!!")
-            #     else:
-            #         info = "数据发送失败!! 响应状态码: %s" % response.status_code
-            #         logger.warning(info)
-            #         print("send failed!")
-            # except ConnectionError as e:
-            #     print(f"connect error:{e}")
-
+                try:
+                    print("start send post ", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+                    response = requests.request("POST",
+                                                self.post_url, timeout=10,
+                                                headers=headers, data=body)
+                    if response.status_code == 200:
+                        logger.info("数据发送成功!!")
+                    else:
+                        info = "数据发送失败!! 响应状态码: %s" % response.status_code
+                        logger.warning(info)
+                        print("send failed!")
+                except Exception as e:
+                    print(f"error:{e}")
+                finally:
+                    print("send post end ", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+                    
     def get_group_name(self):
         self._tab.ele('@title=通讯录').click(by_js=None)
         time.sleep(1)
-        # self._tab.actions.scroll(delta_y=-0.5 * item_height, on_ele=self._tab.ele('@class=scroll-bar'))
         if not self._tab.ele('text=群组'):
             logger.warning("未发现当前账号保存的群聊！！！")
             self.group_names = []
-        else:  #TODO:通讯录中的群聊超过一页时，还需复原滚动条至最上方
+        else:  # TODO:通讯录中的群聊超过一页时，需复原滚动条至最上方
             logger.info("开始获取所有群聊...")
             group_names = []
             is_group_items_end = False
@@ -175,7 +191,8 @@ class MSGCrawler:
                 is_group_items_end, group_names, item_height = self.check_need_scroll_contact()
                 if not is_group_items_end:
                     logger.info("继续向下滑动，获取更多群聊名")
-                    self._tab.actions.scroll(delta_y=0.5 * item_height, on_ele=self._tab.ele('@class=scroll-bar'))
+                    self._tab.actions.scroll(delta_y=0.5 * item_height,
+                                             on_ele=self._tab.ele('@class=scroll-bar'))
                     time.sleep(0.001 * random.randrange(200, 800))
 
             self.group_names = group_names
@@ -194,16 +211,18 @@ class MSGCrawler:
                     if plain != content:  # 有时间
                         pub_time = plain.replace(content, '').replace('\n', '')
                     if not self._cache.is_in_cache(group_name, content):
-                        self._cache.put(group_name, content) 
+                        self._cache.put(group_name, content)
                         msg_item['publisher'], msg_item['content'] = spilt_content(content)
                         msg_item['pubDate'] = datetime.now().strftime("%Y-%m-%d")
                         msg_item['crawlTime'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                        msg_item['groupName'] = group_name
-                        if pub_time is not None:
+                        msg_item['roomName'] = group_name
+                        if pub_time is not None and ":" != pub_time[-1] and ":" != pub_time[0]:
                             hours, minutes = map(int, pub_time.split(":"))
-                            msg_item['pubTime'] = datetime.now().replace(hour=int(hours), minute=int(minutes)).strftime("%H:%M:%S")
+                            msg_item['pubTime'] = datetime.now().replace(hour=int(hours),
+                                                                         minute=int(minutes)).strftime("%H:%M:%S")
                         else:
                             msg_item['pubTime'] = datetime.now().strftime("%H:%M:%S")
+                        logger.debug(f"pub_time: {pub_time}")
                         msg_item_list.append(msg_item)
                 else:  # 没有时间的非文字消息或其它情况
                     logger.debug("没有时间的非文字消息或其它情况")
@@ -211,7 +230,8 @@ class MSGCrawler:
 
     def login(self, is_send_mail):
         print("t1:", datetime.now().strftime("%H:%M:%S"))
-        if self._tab.ele('@id=chatArea') and self._tab.ele('@id=chatArea').states.is_clickable:
+        if self._tab.ele('@id=chatArea') and \
+                self._tab.ele('@id=chatArea').states.is_clickable:
             logger.info("已有账号登录")
         else:
             print("t2:", datetime.now().strftime("%H:%M:%S"))
@@ -228,7 +248,8 @@ class MSGCrawler:
                     elif not self._tab.ele('@class=qrcode'):
                         logger.info("找不到二维码了，啥情况？")
                         try:
-                            if self._tab.ele('二维码失效').states.is_clickable or self._tab.ele('网络连接已断开').states.is_clickable:
+                            if self._tab.ele('二维码失效').states.is_clickable or self._tab.ele(
+                                    '网络连接已断开').states.is_clickable:
                                 logger.info("二维码失效，刷新页面")
                                 self._tab.refresh()
                                 time.sleep(2)
@@ -236,14 +257,14 @@ class MSGCrawler:
                                 logger.error("其它异常情况，需人工处理！！")
                         except ElementNotFoundError as e:
                             if self._tab.ele('@id=chatArea') and \
-                                self._tab.ele('@id=chatArea').states.is_clickable:
-                                    logger.info("login success")
-                                    break
+                                    self._tab.ele('@id=chatArea').states.is_clickable:
+                                logger.info("login success")
+                                break
                     else:
-                        current_time = time.time()    
+                        current_time = time.time()
                         if current_time - last_email_send_time >= 180:
-                            try: 
-                                name= f"qrcode_{datetime.now().strftime('%Y%m%d_%H%M%S')}.jpg"
+                            try:
+                                name = f"qrcode_{datetime.now().strftime('%Y%m%d_%H%M%S')}.jpg"
                                 self._tab.wait(2)
                                 self._tab.get_screenshot(path='tmp', name=name, full_page=True)
                                 send_login_mail('tmp', name, False)
@@ -257,18 +278,17 @@ class MSGCrawler:
                         else:
                             wait_time = 180 - (current_time - last_email_send_time)
                             logger.info(f"距离上次发送邮件不足3分钟，需等待{wait_time:.2f}秒后才可再发送")
-                            # time.sleep(wait_time)
             else:
-                print("sleep30s，赶紧扫码。。。")
-                logger.info("赶紧扫码。。。")
-                time.sleep(30)
-
+                print("sleep 100s，赶紧扫码。。。")
+                time.sleep(100)
 
     def check_need_scroll(self, group_name, content_list):
         is_need_scroll = True
-        cur_content_list = [ele.text for ele in self._tab.ele('@id=chatArea').eles('@class=content')]
+        cur_content_list = [ele.text 
+                            for ele in self._tab.ele('@id=chatArea').eles('@class=content')]
         logger.debug("latest content:{}".format(cur_content_list[-1]))
-        if content_list[-1] == cur_content_list[-1] and content_list[0] == cur_content_list[0]:
+        if content_list[-1] == cur_content_list[-1] and \
+                content_list[0] == cur_content_list[0]:
             logger.info("到顶了,不必再滑动")
             return False
 
@@ -290,12 +310,14 @@ class MSGCrawler:
                 cnt += 1
                 item_height += current_chat_item.rect.size[1]
                 if cnt > 1 and \
-                        (current_chat_item.rect.location[1] - last_group_item_loc_height) > 5 + \
+                        (current_chat_item.rect.location[1]
+                         - last_group_item_loc_height) > 5 + \
                         current_chat_item.rect.size[1]:
                     is_group_items_end = True
                 last_group_item_loc_height = current_chat_item.rect.location[1]
                 if not is_group_items_end:
-                    if len(group_names) == 0 or current_chat_item.text not in group_names:
+                    if len(group_names) == 0 or \
+                            current_chat_item.text not in group_names:
                         group_names.append(current_chat_item.text)
             except ElementNotFoundError as e:
                 logger.error(f"获取群聊项时发生异常：{e}")
@@ -348,10 +370,11 @@ class MSGCrawler:
                     time.sleep(1 + 0.001 * random.randrange(200, 300))
             else:
                 logger.error("No Valid Group Name")
-
-            for k,v in group_msgs.items():
+        except Exception as e:
+            logger.error(f"发生元素交互异常：{e}")
+        else:
+            for k, v in group_msgs.items():
                 if len(v) > 0:
-                    logger.debug(f"type of item: {type(v)}")
                     self.post_to_server(v)
                     logger.info(f"完成发送群聊{k}数据")
                 else:
@@ -359,22 +382,28 @@ class MSGCrawler:
             self._cache.save(CACHE_LOCAL_PATH)
             # 保存结果到本地
             save_as_json(group_msgs)
-        except Exception as e:
-            logger.error(f"发生元素交互异常：{e}")
-        # except [ElementNotFoundError, ElementLostError, NoRectError] as e:
-        # except [ContextLostError, CDPError, PageDisconnectedError] as e2:
-        #     logger.error(f"环境异常：{e2}")
-
 
 
 if __name__ == '__main__':
     crawler = MSGCrawler(max_cache_size=CACHE_SIZE, post_url=POST_URL)
     crawler.login(is_send_mail=False)
     crawler.run()
-    # 设置定时任务
-    logger.info("启动定时任务..")
-    # 群聊较多时根据实际情况调整定时间隔
-    schedule.every(TASK_TNTERVAL).seconds.do(crawler.run)  
 
+    last_run_time = time.time() - TASK_TNTERVAL
     while True:
-        schedule.run_pending()
+        current_time = time.time()
+        if current_time - last_run_time >= TASK_TNTERVAL:
+            print(datetime.now().strftime("%Y-%m-%d %H:%M:%S") + " 开始本次抓取...")
+            last_run_time = current_time
+            crawler.run()
+        else:
+            wait_time = TASK_TNTERVAL - (current_time - last_run_time)
+            time.sleep(wait_time)
+
+    # # 设置定时任务
+    # logger.info("启动定时任务..")
+    # # 群聊较多时根据实际情况调整定时间隔
+    # schedule.every(TASK_TNTERVAL).seconds.do(crawler.run)
+    #
+    # while True:
+    #     schedule.run_pending()
