@@ -32,7 +32,7 @@ logger = logging.getLogger('my_logger')
 handler = TimedRotatingFileHandler('log/cpts_wechat_msg_crawl.log',
                                    when='midnight', interval=1,
                                    backupCount=30, encoding='utf-8')
-logger.setLevel(logging.INFO) # 
+logger.setLevel(logging.INFO)
 
 formatter = logging.Formatter('[%(asctime)s %(levelname)s] %(message)s')
 handler.setLevel(logging.INFO)
@@ -93,7 +93,7 @@ def init_chromium_browser_tab():
     # 启动或接管浏览器，并创建标签页对象（仅支持Chromium内核浏览器）
     # 程序结束时，被打开的浏览器不会主动关闭（VSCode 启动的除外）
     co = ChromiumOptions()
-    co.set_timeouts(base=3, page_load=10, script=10)
+    co.set_timeouts(base=10, page_load=10, script=10)
     co.set_argument('--start-maximized')
     co.add_extension(r'./wechat-need-web-main/dist/chrome')
     # co.save_to_default()
@@ -101,13 +101,14 @@ def init_chromium_browser_tab():
     return Chromium(addr_or_opts=co).latest_tab
 
 
-def save_as_json(msgs):
+def save_as_json(msgs, group_name):
     path = "msg.json"
     with open(path, 'a', encoding="utf-8") as f:
         for k, v in msgs.items():
-            for data in v:
-                data_json = json.dumps(data, ensure_ascii=False)
-                f.write(data_json + "\n")
+            if k == group_name:
+                for data in v:
+                    data_json = json.dumps(data, ensure_ascii=False)
+                    f.write(data_json + "\n")
 
 
 def _get_or_create_cache(max_cache_size):
@@ -115,7 +116,7 @@ def _get_or_create_cache(max_cache_size):
     try:
         logger.info("加载本地缓存...")
         cache.load(CACHE_LOCAL_PATH)
-    except:
+    except Exception as e:
         logger.warning("加载本地缓存失败，将不使用本地缓存")
     return cache
 
@@ -129,19 +130,19 @@ class MSGCrawler:
         self.group_names = []  # 默认需抓取的群聊名列表
         self.post_url = post_url  # 抓取结果发送的url
 
-    def dealItem(self, item):
-        for k,v in item.items():
-            if k=='publisher' or k=='content' or k=='roomName':
-                pattern = re.compile(r'[^\t\n\w]')
+    def deal_item(self, item):
+        for k, v in item.items():
+            if k == 'publisher' or k == 'content' or k == 'roomName':
+                pattern = r'[^\u4e00-\u9fff\w\t\n\.。,，:：;；?!\'\"-]'
                 item[k] = pattern.sub('', v)
         return item
 
     def post_to_server(self, items):
         for item in items:
-            if item['content'] != "":
+            if item['content'] != "" and "暂不支持的消息" not in item['content']:
                 jdata = {"REQ_MESSAGE": {
                     "REQ_HEAD": {"TRANS_PROCESS": "", "TRANS_ID": ""},
-                    "REQ_BODY": {"data": [self.dealItem(item)]}
+                    "REQ_BODY": {"data": [self.deal_item(item)]}
                 }}
                 boundary = "----WebKitFormBoundary7MA4YWxkTrZu0gW"  # 定义边界字符串
                 body = ""
@@ -172,7 +173,7 @@ class MSGCrawler:
                         logger.warning(info)
                         print("send failed!")
                 except Exception as e:
-                    print(f"error:{e}")
+                    print(f"send error:{e}")
                 finally:
                     print("send post end ", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
                     
@@ -191,7 +192,7 @@ class MSGCrawler:
                 is_group_items_end, group_names, item_height = self.check_need_scroll_contact()
                 if not is_group_items_end:
                     logger.info("继续向下滑动，获取更多群聊名")
-                    self._tab.actions.scroll(delta_y=0.5 * item_height,
+                    self._tab.actions.scroll(delta_y=int(0.5 * item_height),
                                              on_ele=self._tab.ele('@class=scroll-bar'))
                     time.sleep(0.001 * random.randrange(200, 800))
 
@@ -294,8 +295,8 @@ class MSGCrawler:
 
         for content in cur_content_list:
             if self._cache.is_in_cache(group_name, content):
-                is_need_scroll = False
                 logger.info("已没有更多消息,不必再滑动")
+                return False
 
         return is_need_scroll
 
@@ -344,12 +345,12 @@ class MSGCrawler:
         return msg_item_list
 
     def run(self):
-        try:
-            group_msgs = {}
-            self.get_group_name()
+        group_msgs = {}
+        self.get_group_name()
 
-            if self.group_names is not None and len(self.group_names) > 0:
-                for group_name in self.group_names:
+        if self.group_names is not None and len(self.group_names) > 0:
+            for group_name in self.group_names:
+                try:
                     # 先清空搜索框再输入群名称
                     self._tab.ele('tag:input').clear()
                     self._tab.ele('tag:input').input(group_name)
@@ -368,20 +369,19 @@ class MSGCrawler:
                         logger.error("未知错误")
                     logger.info("结束抓取{}".format(group_name))
                     time.sleep(1 + 0.001 * random.randrange(200, 300))
-            else:
-                logger.error("No Valid Group Name")
-        except Exception as e:
-            logger.error(f"发生元素交互异常：{e}")
-        else:
-            for k, v in group_msgs.items():
-                if len(v) > 0:
-                    self.post_to_server(v)
-                    logger.info(f"完成发送群聊{k}数据")
+                except Exception as e:
+                    logger.error(f"发生元素交互异常：{e}")
                 else:
-                    logger.info(f"群聊{k}没有新数据，此次不发送")
-            self._cache.save(CACHE_LOCAL_PATH)
-            # 保存结果到本地
-            save_as_json(group_msgs)
+                    if group_name in group_msgs and len(group_msgs[group_name]) > 0:
+                        self.post_to_server(group_msgs[group_name])
+                        logger.info(f"完成发送群聊{group_name}数据")
+                    else:
+                        logger.info(f"群聊{group_name}没有新数据，此次不发送")
+                    self._cache.save(CACHE_LOCAL_PATH, group_name)
+                    # 保存结果到本地
+                    save_as_json(group_msgs, group_name)
+        else:
+            logger.error("No Valid Group Name")
 
 
 if __name__ == '__main__':
